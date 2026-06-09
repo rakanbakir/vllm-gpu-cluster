@@ -3,6 +3,12 @@ set -euo pipefail
 
 MODEL_ID="${MODEL_ID:-facebook/opt-125m}"
 
+# Kubernetes service discovery injects VLLM_PORT=tcp://<ip>:8000
+# which vLLM's internal env reader misinterprets. Strip it.
+if [[ "${VLLM_PORT:-}" == tcp://* ]]; then
+    unset VLLM_PORT
+fi
+
 echo "Starting vLLM with model: $MODEL_ID"
 
 exec python3 -m vllm.entrypoints.openai.api_server \
