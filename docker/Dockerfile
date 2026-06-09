@@ -8,18 +8,19 @@
 #     --target gpu \
 #     -f docker/Dockerfile .
 #
-# CPU build (local dev, 8GB MacBooks):
-#   docker build -t vllm-opt125m:cpu \
-#     --target cpu \
-#     -f docker/Dockerfile .
+# CPU build (Apple Silicon / ARM64):
+#   docker build --target cpu -t vllm-opt125m:cpu -f docker/Dockerfile .
+#
+# CPU build (Linux / x86_64):
+#   docker build --target cpu --build-arg CPU_ARCH=x86_64 -t vllm-opt125m:cpu -f docker/Dockerfile .
 # ============================================================================
+
+ARG CPU_ARCH=arm64
 
 # ============================================================================
 # Stage 1: CPU-only base (for local development)
-# Uses official vLLM CPU Docker image — includes CPU-optimized build
-# with proper platform detection and PyTorch compiled for CPU.
 # ============================================================================
-FROM vllm/vllm-openai-cpu:v0.22.1-arm64 AS cpu
+FROM vllm/vllm-openai-cpu:v0.22.1-${CPU_ARCH} AS cpu
 
 ENV MODEL_ID=facebook/opt-125m
 ENV VLLM_HOST=0.0.0.0

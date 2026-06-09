@@ -97,12 +97,19 @@ EOF
 }
 
 build_image() {
+    local cpu_arch="arm64"
+    case "$(uname -m)" in
+        x86_64|amd64) cpu_arch="x86_64" ;;
+        aarch64|arm64) cpu_arch="arm64" ;;
+    esac
+
     if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         log_info "Docker image $IMAGE_NAME already exists — skipping build."
     else
-        log_info "Building Docker image: $IMAGE_NAME"
+        log_info "Building Docker image: $IMAGE_NAME (arch: $cpu_arch)"
         docker build \
             --target cpu \
+            --build-arg CPU_ARCH="$cpu_arch" \
             -t "$IMAGE_NAME" \
             -f "$PROJECT_DIR/docker/Dockerfile" \
             "$PROJECT_DIR"

@@ -45,8 +45,11 @@ Production-grade deployment of vLLM serving facebook/opt-125m on AWS EKS with GP
 ### 1. Local Test (Docker only — no Kubernetes)
 
 ```bash
-# Build CPU image (Apple Silicon MacBooks)
-docker build -t vllm-opt125m:cpu --target cpu -f docker/Dockerfile .
+# Apple Silicon (arm64)
+docker build --target cpu -t vllm-opt125m:cpu -f docker/Dockerfile .
+
+# Linux (x86_64)
+docker build --target cpu --build-arg CPU_ARCH=x86_64 -t vllm-opt125m:cpu -f docker/Dockerfile .
 
 # Run vLLM (model auto-downloads on first run, ~250 MB)
 docker run --rm -p 8000:8000 --shm-size=2g vllm-opt125m:cpu
