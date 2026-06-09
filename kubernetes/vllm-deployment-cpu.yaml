@@ -1,0 +1,90 @@
+# ============================================================================
+# vLLM Deployment — facebook/opt-125m (CPU mode for local dev)
+# ============================================================================
+# Strips GPU: resources, tolerations, node affinity, NVIDIA device plugin reqs.
+# Used by deploy.sh for Minikube/Kind local development.
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-opt125m
+  namespace: vllm
+  labels:
+    app: vllm
+    model: opt-125m
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: vllm
+      model: opt-125m
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: opt-125m
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: vllm
+          image: vllm-opt125m:cpu
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: VLLM_DEVICE
+              value: "cpu"
+            - name: VLLM_GPU_MEMORY_UTILIZATION
+              value: "0.4"
+            - name: MODEL_ID
+              value: "facebook/opt-125m"
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /home/vllm/.cache/huggingface
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: hf-cache
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi

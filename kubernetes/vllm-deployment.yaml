@@ -1,0 +1,156 @@
+# ============================================================================
+# vLLM Deployment — facebook/opt-125m (250MB model)
+# ============================================================================
+# GPU Mode (production): tensor-parallel-size=1, gpu-memory-utilization=0.85
+# CPU Mode (dev/demo):   Set VLLM_DEVICE=cpu, remove GPU resource requests
+#
+# For CPU mode on minikube/kind:
+#   1. Comment out resources.requests/limits for nvidia.com/gpu
+#   2. Set env VLLM_DEVICE=cpu
+#   3. Remove tolerations for nvidia.com/gpu
+#   4. Change nodeSelector/affinity to non-GPU nodes
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-opt125m
+  namespace: vllm
+  labels:
+    app: vllm
+    model: opt-125m
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: vllm
+      model: opt-125m
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: opt-125m
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: vllm-sa
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: "nvidia.com/gpu"
+                    operator: In
+                    values: ["true"]
+      containers:
+        - name: vllm
+          image: ${ECR_REGISTRY}/mal-vllm-opt125m:${IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          command: ["/entrypoint.sh"]
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: VLLM_DEVICE
+              value: "auto"
+            - name: VLLM_GPU_MEMORY_UTILIZATION
+              value: "0.85"
+            - name: VLLM_MAX_MODEL_LEN
+              value: "2048"
+            - name: VLLM_TENSOR_PARALLEL_SIZE
+              value: "1"
+            - name: VLLM_MAX_NUM_SEQS
+              value: "32"
+            - name: VLLM_DTYPE
+              value: "auto"
+            - name: MODEL_ID
+              value: "facebook/opt-125m"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vllm-secrets
+                  key: hf_token
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1"
+              nvidia.com/gpu: "1"
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /home/vllm/.cache/huggingface
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: hf-cache
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vllm-sa
+  namespace: vllm
+  labels:
+    app: vllm
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vllm-role
+  namespace: vllm
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vllm-rolebinding
+  namespace: vllm
+subjects:
+  - kind: ServiceAccount
+    name: vllm-sa
+roleRef:
+  kind: Role
+  name: vllm-role
+  apiGroup: rbac.authorization.k8s.io

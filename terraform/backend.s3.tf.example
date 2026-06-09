@@ -1,0 +1,22 @@
+# ============================================================================
+# Terraform Backend — S3 with DynamoDB Lock (production)
+# ============================================================================
+# Usage:
+#   1. Rename this file to backend.tf (overwrite the local backend)
+#   2. Fill in your bucket name and DynamoDB table
+#   3. Run: terraform init -migrate-state
+#
+# Prerequisites:
+#   - S3 bucket for state storage
+#   - DynamoDB table for state locking (partition key: LockID)
+# ============================================================================
+
+terraform {
+  backend "s3" {
+    bucket         = "CHANGE_ME-terraform-state"
+    key            = "eks-vllm/terraform.tfstate"
+    region         = "me-central-1"
+    encrypt        = true
+    use_lockfile   = true
+  }
+}

@@ -1,0 +1,16 @@
+# Exclude large files and secrets
+*.tar
+*.tgz
+*.gz
+.env*
+*.pem
+models/
+.git/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+README.md
+docs/
+.gitignore
+.dockerignore

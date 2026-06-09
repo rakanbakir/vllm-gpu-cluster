@@ -1,0 +1,49 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+override.tf
+
+# Kubernetes
+*.kubeconfig
+kubeconfig_*
+
+# Secrets & Environment
+.env
+.env.*
+*-creds.env
+*.pem
+secrets/
+
+# Docker
+docker/*.tar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python / Virtualenv
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Helm
+helm/charts/
+helm/*.tgz
+
+# Test artifacts
+scripts/*.json
+*.log
+
+# Model cache (if cached locally)
+models/
+~/.cache/huggingface/
+terraform/.terraform.lock.hcl

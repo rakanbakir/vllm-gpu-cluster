@@ -1,0 +1,297 @@
+# ============================================================================
+# Grafana Dashboard ConfigMap — vLLM Inference Monitoring
+# ============================================================================
+# Contains a pre-built Grafana dashboard with panels for:
+#   1. vLLM Request Latency (p50, p95, p99)
+#   2. GPU Memory Utilization (%)
+#   3. Request Throughput (requests/second)
+#   4. Token Generation Rate (tokens/second)
+#
+# Import into Grafana manually or via the sidecar dashboard discovery.
+# ============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vllm-grafana-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app: vllm
+data:
+  vllm-dashboard.json: |
+    {
+      "title": "vLLM Inference Service",
+      "uid": "vllm-inference",
+      "tags": ["vllm", "llm", "gpu", "inference"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "10s",
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {
+              "value": "Prometheus",
+              "text": "Prometheus"
+            }
+          },
+          {
+            "name": "pod",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
+            "query": "label_values(vllm:num_requests_waiting, pod)",
+            "refresh": 1,
+            "label": "Pod",
+            "multi": true,
+            "includeAll": true
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "vLLM Request Latency (seconds)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" }
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(vllm:e2e_request_latency_seconds_bucket{pod=~\"$pod\"}[2m])) by (le))",
+              "legendFormat": "p50 latency",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket{pod=~\"$pod\"}[2m])) by (le))",
+              "legendFormat": "p95 latency",
+              "refId": "B"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(vllm:e2e_request_latency_seconds_bucket{pod=~\"$pod\"}[2m])) by (le))",
+              "legendFormat": "p99 latency",
+              "refId": "C"
+            }
+          ],
+          "description": "End-to-end request latency percentiles for vLLM completions endpoint"
+        },
+        {
+          "id": 2,
+          "title": "GPU Memory Utilization (%)",
+          "type": "gauge",
+          "gridPos": { "x": 12, "y": 0, "w": 6, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 70 },
+                  { "color": "red", "value": 90 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg(DCGM_FI_DEV_FB_USED{pod=~\"$pod\"}) / avg(DCGM_FI_DEV_FB_FREE{pod=~\"$pod\"} + DCGM_FI_DEV_FB_USED{pod=~\"$pod\"}) * 100",
+              "legendFormat": "GPU Memory Used %",
+              "refId": "A"
+            }
+          ],
+          "description": "Average GPU framebuffer memory utilization across vLLM pods"
+        },
+        {
+          "id": 3,
+          "title": "GPU Compute Utilization (%)",
+          "type": "gauge",
+          "gridPos": { "x": 18, "y": 0, "w": 6, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 70 },
+                  { "color": "red", "value": 90 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg(DCGM_FI_DEV_GPU_UTIL{pod=~\"$pod\"})",
+              "legendFormat": "GPU Utilization %",
+              "refId": "A"
+            }
+          ],
+          "description": "Average GPU compute utilization across vLLM pods"
+        },
+        {
+          "id": 4,
+          "title": "Request Throughput (req/s)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "lineInterpolation": "smooth", "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(vllm:request_success_total{pod=~\"$pod\"}[2m]))",
+              "legendFormat": "Successful requests/s",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(vllm:request_total{pod=~\"$pod\"}[2m]))",
+              "legendFormat": "Total requests/s",
+              "refId": "B"
+            }
+          ],
+          "description": "vLLM request throughput — successful and total requests per second"
+        },
+        {
+          "id": 5,
+          "title": "Token Generation Rate (tokens/s)",
+          "type": "timeseries",
+          "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "lineInterpolation": "smooth", "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(vllm:generation_tokens_total{pod=~\"$pod\"}[2m]))",
+              "legendFormat": "Output tokens/s",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(vllm:prompt_tokens_total{pod=~\"$pod\"}[2m]))",
+              "legendFormat": "Input tokens/s",
+              "refId": "B"
+            }
+          ],
+          "description": "Token generation rate — output tokens and input/prompt tokens per second"
+        },
+        {
+          "id": 6,
+          "title": "Active Requests in Queue",
+          "type": "timeseries",
+          "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "lineInterpolation": "step", "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "vllm:num_requests_running{pod=~\"$pod\"}",
+              "legendFormat": "Running: {{pod}}",
+              "refId": "A"
+            },
+            {
+              "expr": "vllm:num_requests_waiting{pod=~\"$pod\"}",
+              "legendFormat": "Waiting: {{pod}}",
+              "refId": "B"
+            },
+            {
+              "expr": "vllm:num_requests_swapped{pod=~\"$pod\"}",
+              "legendFormat": "Swapped: {{pod}}",
+              "refId": "C"
+            }
+          ],
+          "description": "Number of requests in running, waiting, and swapped states"
+        },
+        {
+          "id": 7,
+          "title": "GPU Power Usage (W)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 16, "w": 8, "h": 6 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "custom": { "lineInterpolation": "smooth", "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg(DCGM_FI_DEV_POWER_USAGE{pod=~\"$pod\"})",
+              "legendFormat": "Power Draw",
+              "refId": "A"
+            }
+          ],
+          "description": "Average GPU power consumption in watts"
+        },
+        {
+          "id": 8,
+          "title": "GPU Temperature (°C)",
+          "type": "timeseries",
+          "gridPos": { "x": 8, "y": 16, "w": 8, "h": 6 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "celsius",
+              "custom": { "lineInterpolation": "smooth", "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg(DCGM_FI_DEV_GPU_TEMP{pod=~\"$pod\"})",
+              "legendFormat": "GPU Temperature",
+              "refId": "A"
+            }
+          ],
+          "description": "Average GPU temperature in Celsius"
+        },
+        {
+          "id": 9,
+          "title": "Pod Status",
+          "type": "stat",
+          "gridPos": { "x": 16, "y": 16, "w": 8, "h": 6 },
+          "targets": [
+            {
+              "expr": "count(up{job=\"vllm-metrics\", pod=~\"$pod\"})",
+              "legendFormat": "Healthy vLLM Pods",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "green", "value": 2 }
+                ]
+              }
+            }
+          },
+          "description": "Number of healthy vLLM pods reporting metrics"
+        }
+      ],
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      }
+    }

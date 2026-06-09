@@ -1,0 +1,39 @@
+# ============================================================================
+# NVIDIA DCGM Exporter Configuration
+# ============================================================================
+# Deployed via Helm alongside kube-prometheus-stack
+# Provides GPU metrics: utilization, memory, temperature, power
+# ============================================================================
+
+dcgm-exporter:
+  namespace: monitoring
+  nameOverride: dcgm-exporter
+
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    additionalLabels:
+      release: kube-prometheus-stack
+
+  nodeSelector:
+    nvidia.com/gpu: "true"
+
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  securityContext:
+    privileged: true
+
+  args:
+    - "-f"
+    - "/etc/dcgm-exporter/dcp-metrics-included.csv"

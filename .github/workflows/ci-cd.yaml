@@ -1,0 +1,284 @@
+# ============================================================================
+# CI/CD Pipeline — vLLM Inference Service
+# ============================================================================
+# Trigger: Push to main branch (after PR merge)
+# Workflow:
+#   1. Lint & Validate (Terraform, Kubernetes manifests)
+#   2. Build Docker Image
+#   3. Scan Image (Trivy vulnerability scan)
+#   4. Push to ECR
+#   5. Deploy to EKS (rolling update)
+#   6. Smoke Test (/v1/completions endpoint)
+#
+# Required GitHub Secrets:
+#   - AWS_ACCESS_KEY_ID        : AWS IAM user access key
+#   - AWS_SECRET_ACCESS_KEY    : AWS IAM user secret key
+#   - AWS_ACCOUNT_ID           : AWS account ID
+#   - HF_TOKEN                 : HuggingFace API token
+# ============================================================================
+
+name: CI/CD — vLLM Inference
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/**'
+      - 'kubernetes/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: me-central-1
+  ECR_REPOSITORY: mal-vllm-opt125m
+  EKS_CLUSTER: mal-vllm-cluster
+  K8S_NAMESPACE: vllm
+  DEPLOYMENT_NAME: vllm-opt125m
+  DOCKERFILE_PATH: docker/Dockerfile
+
+jobs:
+  # ==========================================================================
+  # Job 1: Lint & Validate
+  # ==========================================================================
+  validate:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9"
+
+      - name: Terraform Format Check
+        working-directory: terraform
+        run: |
+          terraform fmt -check -recursive
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: |
+          terraform validate
+
+      - name: Setup kubeconform
+        run: |
+          curl -L https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate Kubernetes Manifests
+        run: |
+          for f in kubernetes/*.yaml; do
+            kubeconform -ignore-missing-schemas -strict "$f"
+          done
+
+      - name: Dockerfile Lint (hadolint)
+        run: |
+          docker run --rm -i hadolint/hadolint < docker/Dockerfile
+
+  # ==========================================================================
+  # Job 2: Build, Scan & Push Docker Image
+  # ==========================================================================
+  build:
+    name: Build, Scan & Push
+    runs-on: ubuntu-latest
+    needs: validate
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-ecr-push
+          role-session-name: github-actions-vllm
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate Image Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build Docker Image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_PATH }}
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=vllm/vllm-openai:v0.22.1-cu129-ubuntu2404
+            DEVICE=auto
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 0
+          timeout: 15m
+
+      - name: Upload Trivy Results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Push to ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=vllm/vllm-openai:v0.22.1-cu129-ubuntu2404
+            DEVICE=auto
+
+  # ==========================================================================
+  # Job 3: Deploy to EKS
+  # ==========================================================================
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.alb_url }}
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      alb_url: ${{ steps.deploy.outputs.alb_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-eks-deploy
+          role-session-name: github-actions-vllm-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER }}
+
+      - name: Set ECR Image in Deployment
+        id: deploy
+        run: |
+          ECR_URL="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}"
+          IMAGE_TAG="${{ needs.build.outputs.image-tag }}"
+          IMAGE="${ECR_URL}:${IMAGE_TAG}"
+
+          echo "Deploying image: $IMAGE"
+
+          kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+            vllm="$IMAGE" \
+            --namespace ${{ env.K8S_NAMESPACE }}
+
+          kubectl annotate deployment/${{ env.DEPLOYMENT_NAME }} \
+            kubernetes.io/change-cause="GitHub Actions: ${{ github.sha }} | ${{ github.event.head_commit.message }}" \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --overwrite
+
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --timeout=10m
+
+          ALB_URL=$(kubectl get ingress vllm-ingress -n ${{ env.K8S_NAMESPACE }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+
+          echo "alb_url=http://$ALB_URL" >> $GITHUB_OUTPUT
+
+  # ==========================================================================
+  # Job 4: Smoke Test
+  # ==========================================================================
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: always() && needs.deploy.result == 'success'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-eks-deploy
+          role-session-name: github-actions-vllm-smoke
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER }}
+
+      - name: Smoke Test /v1/completions
+        run: |
+          echo "Starting port-forward to vLLM service..."
+          kubectl port-forward -n ${{ env.K8S_NAMESPACE }} svc/vllm 8000:8000 &
+          PF_PID=$!
+          sleep 5
+
+          echo "Testing /v1/completions endpoint..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "facebook/opt-125m",
+              "prompt": "Hello, how are you?",
+              "max_tokens": 50,
+              "temperature": 0.7
+            }')
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response Body: $BODY"
+
+          kill $PF_PID 2>/dev/null || true
+
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "FAILED: Expected 200, got $HTTP_CODE"
+            exit 1
+          fi
+
+          if echo "$BODY" | grep -q '"choices"'; then
+            echo "SUCCESS: /v1/completions returned valid response with choices"
+          else
+            echo "FAILED: Response does not contain 'choices'"
+            exit 1
+          fi
