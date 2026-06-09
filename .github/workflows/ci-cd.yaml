@@ -14,7 +14,7 @@
 #   - AWS_ACCESS_KEY_ID        : AWS IAM user access key
 #   - AWS_SECRET_ACCESS_KEY    : AWS IAM user secret key
 #   - AWS_ACCOUNT_ID           : AWS account ID
-#   - HF_TOKEN                 : HuggingFace API token
+#   - EKS_CLUSTER_NAME         : EKS cluster name (overrides env default)
 # ============================================================================
 
 name: CI/CD — vLLM Inference
@@ -26,6 +26,15 @@ on:
     paths:
       - 'docker/**'
       - 'kubernetes/**'
+      - 'terraform/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'docker/**'
+      - 'kubernetes/**'
+      - 'terraform/**'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -55,22 +64,19 @@ jobs:
 
       - name: Terraform Format Check
         working-directory: terraform
-        run: |
-          terraform fmt -check -recursive
+        run: terraform fmt -check -recursive
 
       - name: Terraform Init
         working-directory: terraform
-        run: |
-          terraform init -backend=false
+        run: terraform init
 
       - name: Terraform Validate
         working-directory: terraform
-        run: |
-          terraform validate
+        run: terraform validate
 
       - name: Setup kubeconform
         run: |
-          curl -L https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
           sudo mv kubeconform /usr/local/bin/
 
       - name: Validate Kubernetes Manifests
@@ -93,6 +99,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      security-events: write
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
     steps:
@@ -128,11 +135,9 @@ jobs:
         with:
           context: .
           file: ${{ env.DOCKERFILE_PATH }}
+          target: gpu
           load: true
           tags: ${{ steps.meta.outputs.tags }}
-          build-args: |
-            BASE_IMAGE=vllm/vllm-openai:v0.22.1-cu129-ubuntu2404
-            DEVICE=auto
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -156,11 +161,9 @@ jobs:
         with:
           context: .
           file: ${{ env.DOCKERFILE_PATH }}
+          target: gpu
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          build-args: |
-            BASE_IMAGE=vllm/vllm-openai:v0.22.1-cu129-ubuntu2404
-            DEVICE=auto
 
   # ==========================================================================
   # Job 3: Deploy to EKS
@@ -169,14 +172,13 @@ jobs:
     name: Deploy to EKS
     runs-on: ubuntu-latest
     needs: build
+    if: github.ref == 'refs/heads/main'
     environment:
       name: production
       url: ${{ steps.deploy.outputs.alb_url }}
     permissions:
       id-token: write
       contents: read
-    outputs:
-      alb_url: ${{ steps.deploy.outputs.alb_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
