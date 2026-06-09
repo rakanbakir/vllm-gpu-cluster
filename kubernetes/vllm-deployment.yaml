@@ -44,6 +44,7 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
     spec:
+      enableServiceLinks: false
       serviceAccountName: vllm-sa
       tolerations:
         - key: "nvidia.com/gpu"
